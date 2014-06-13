@@ -1,0 +1,295 @@
+% eventRelatedGlm.m
+%
+%      usage: view = eventRelatedGlm_so(view,params)
+%         by: shani, modeled on Glm code by farshad moradi, modeled on eventRelated code by Justin
+%       date: 2007August3
+%    purpose: farshad's GLM is same as eventRelated, but uses canonical hrf instead of deconvolution
+%             this code is the same as GLM, but uses measured HRF instead of canonical, and outputs
+%             overlays of the beta values in addition to the rSquared overlay
+%             TODO: need to also make it possible to input ROIs and do the GLM on the ROIs as well as voxels
+%             2007Aug19 - saved a backup (eventRelatedGlm_so.BKP) and started editing to use SPM HRF
+%
+function [view d] = eventRelatedGlm_so(view,params)
+
+d = [];
+
+% check arguments
+if ~any(nargin == [1 2])
+  help eventRelated
+  return
+end
+
+mrGlobals;
+
+% Default parameters if not input by user:
+if ieNotDefined('params')
+  % put up the gui
+  params = eventRelatedGlmGUI;
+end
+
+% Reconcile params and abort if empty
+params = mrParamsReconcile([],params);
+if ieNotDefined('params'),return,end
+
+% set the group
+view = viewSet(view,'groupName',params.groupName);
+
+% set the overlays
+[r2 s1 dp s2] = setOverlays(view,params); % do in a subfunction to keep code clean looking
+
+tic
+set(viewGet(view,'figNum'),'Pointer','watch');drawnow;
+for scanNum = params.scanNum
+  % decide how many slices to do at a time, this is done
+  % simply to save memory -- currently our system is limited
+  % to 2G of memory and for large concatenations, you need
+  % to break up the analysis into smaller portions of the data
+  numSlices = viewGet(view,'nSlices',scanNum);
+  numVolumes = viewGet(view,'nFrames',scanNum);
+  dims = viewGet(view,'dims',scanNum);
+  % choose how many slices based on trying to keep a certain
+  % amount of data in the memory
+  numSlicesAtATime = getNumSlicesAtATime(numVolumes,dims);
+  currentSlice = 1;
+  ehdr = [];ehdrste = [];thisr2 = [];
+
+  for i = 1:ceil(numSlices/numSlicesAtATime)
+    % load the scan
+    d = loadScan(view,scanNum,[],[currentSlice min(numSlices,currentSlice+numSlicesAtATime-1)]);
+    params.hrfParams.tmax = params.scanParams{scanNum}.hdrlen; %+d.tr/2;
+    
+    d.supersampling = params.trSupersampling;
+    % use the duration of stimuli/events in the design matrix
+    d.impulse = 0; 
+
+    % get the stim volumes, if empty then abort
+    d = getStimvol(d,params.scanParams{scanNum});
+    if isempty(d.stimvol),mrWarnDlg('No stim volumes found');return,end
+    
+    % do any called-for preprocessing
+    hrf = feval(params.hrfModel, d.tr/d.supersampling, params.hrfParams);
+    d = eventRelatedPreProcess(d,params.scanParams{scanNum}.preprocess);
+    % make a stimulation convolution matrix
+    
+    d = makeglm(d,hrf);
+    % compute the estimated hemodynamic responses
+    d = getr2(d);
+    % update the current slice we are working on
+    currentSlice = currentSlice+numSlicesAtATime;
+    % cat with what has already been computed for other slices
+    ehdr = cat(3,ehdr,d.ehdr);
+    ehdrste = cat(3,ehdrste,d.ehdrste);
+    thisr2 = cat(3,thisr2,d.r2);
+  end
+
+  % now put all the data from all the slices into the structure
+  d.ehdr = ehdr;
+  d.ehdrste = ehdrste;
+  d.r2 = thisr2;
+
+  d.dim(3) = size(d.r2,3);
+
+  % save the r2 overlay
+  r2.data{scanNum} = d.r2;
+  r2.params{scanNum} = params.scanParams{scanNum};
+  
+  % save the beta overlays
+  s1.data{scanNum} = squeeze(d.ehdr(:,:,:,1));
+  s1.params{scanNum} = params.scanParams{scanNum};
+
+  dp.data{scanNum} = squeeze(d.ehdr(:,:,:,2));
+  dp.params{scanNum} = params.scanParams{scanNum};
+
+  s2.data{scanNum} = squeeze(d.ehdr(:,:,:,3));
+  s2.params{scanNum} = params.scanParams{scanNum};
+
+  % save other eventRelated parameters
+  erAnal.d{scanNum}.hrf = d.simulatedhrf;
+  erAnal.d{scanNum}.actualhrf = hrf;
+  erAnal.d{scanNum}.trsupersampling = d.supersampling;
+  erAnal.d{scanNum}.ver = d.ver;
+  erAnal.d{scanNum}.filename = d.filename;
+  erAnal.d{scanNum}.filepath = d.filepath;
+  erAnal.d{scanNum}.dim = d.dim;
+  erAnal.d{scanNum}.ehdr = d.ehdr;
+  erAnal.d{scanNum}.ehdrste = d.ehdrste;
+  erAnal.d{scanNum}.nhdr = d.nhdr;
+  erAnal.d{scanNum}.hdrlen = d.hdrlen;
+  erAnal.d{scanNum}.tr = d.tr;
+  erAnal.d{scanNum}.stimNames = d.stimNames;
+  erAnal.d{scanNum}.scm = d.scm;
+  erAnal.d{scanNum}.expname = d.expname;
+  erAnal.d{scanNum}.fullpath = d.fullpath;
+
+  stimvol = d.stimvol;
+  for i=1:length(stimvol)
+      stimvol{i} = unique(ceil(stimvol{i}/d.supersampling));
+  end
+  erAnal.d{scanNum}.stimvol = stimvol;
+
+end
+toc
+
+% set ranges
+r2.range = findRange(r2.data);
+s1.range = findRange(s1.data);
+dp.range = findRange(dp.data);
+s2.range = findRange(s2.data);
+
+% install analysis
+erAnal.name = params.saveName;
+erAnal.type = 'glmAnal';
+erAnal.groupName = params.groupName;
+erAnal.function = 'eventRelatedGlm';
+erAnal.reconcileFunction = 'defaultReconcileParams';
+erAnal.mergeFunction = 'defaultMergeParams';
+erAnal.guiFunction = 'eventRelatedGlmGUI';
+erAnal.params = params;
+erAnal.date = r2.date;
+
+view = viewSet(view,'newAnalysis',erAnal);
+view = viewSet(view,'newoverlay',r2);
+view = viewSet(view,'newoverlay',s1);
+view = viewSet(view,'newoverlay',dp);
+view = viewSet(view,'newoverlay',s2);
+
+% Save it
+saveAnalysis(view,erAnal.name);
+
+set(viewGet(view,'figNum'),'Pointer','arrow');drawnow
+
+% for output
+if nargout > 1
+  for i = 1:length(d)
+    erAnal.d{i}.r2 = r2.data{i};
+  end
+  % make d strucutre
+  if length(erAnal.d) == 1
+    d = erAnal.d{1};
+  else
+    d = erAnal.d;
+  end
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                         SUBFUNCTIONS                                 %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+function range = findRange(data)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+ampMin = realmax;
+ampMax = 0;
+nScans = length(data);
+for scan=1:nScans
+  if ~isempty(data{scan})
+    ampMin = min([ampMin min(data{scan}(:))]);
+    ampMax = max([ampMax max(data{scan}(:))]);
+  end
+end
+if (ampMin <= ampMax)
+  range = [ampMin ampMax];
+else
+  % if amp data is empty, need to make sure min < max
+  range = [0 1];
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+function hrf = spmHRF_so(TR,params)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% 2007 August 19 shani
+% wrote this wrapper for spm_hrf so I can call it
+% from within my glm code for mrLoadRet-4.5
+
+if TR=='params' % allow user to ask for parameters
+    hrf = {...
+        {'description', 'spmHRF_so', 'comment describing the hdr model'},...
+        {'rdelay', 6, 'response delay (spm_hrf)'},...
+        {'udelay', 16, 'undershoot delay (spm_hrf)'},...
+        {'rdispersion', 1, 'response dispersion (spm_hrf)'},...
+        {'udispersion', 1, 'undershoot dispersion (spm_hrf)'},...
+        {'incDeriv',0,'type=checkbox','include derivative of the hrf in the model?'},...
+    };
+    return
+end
+
+p(1) = params.rdelay;
+p(2) = params.udelay;
+p(3) = params.rdispersion;
+p(4) = params.udispersion;
+p(5) = 6;
+p(6) = 0;
+p(7) = params.tmax;
+[hrf,p] = spm_hrf(TR,p);
+hrf = hrf*(1.5/2); % adjusting from hrf (expt run at TR=1.5) to main expts (TR = 2)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+function [r2 s1 dp s2] = setOverlays(view,params) 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% create the parameters for the r2 overlay
+dateString = datestr(now);
+r2.name = 'r2';
+r2.groupName = params.groupName;
+r2.function = 'eventRelatedGlm_so';
+r2.reconcileFunction = 'defaultReconcileParams';
+r2.data = cell(1,viewGet(view,'nScans'));
+r2.date = dateString;
+r2.params = cell(1,viewGet(view,'nScans'));
+% r2.range = [0 1];
+% r2.clip = [0 1];
+r2.colormap = hot(312); % colormap is made with a little bit less on the dark end
+r2.colormap = r2.colormap(end-255:end,:);
+r2.alpha = 1;
+r2.colormapType = 'setRangeToMax';
+r2.interrogator = 'eventRelatedPlot_so';
+r2.mergeFunction = 'defaultMergeParams';
+
+% create the parameters for the beta overlays
+s1.name = 's1';
+s1.groupName = params.groupName;
+s1.function = 'eventRelatedGlm_so';
+s1.reconcileFunction = 'defaultReconcileParams';
+s1.data = cell(1,viewGet(view,'nScans'));
+s1.date = dateString;
+s1.params = cell(1,viewGet(view,'nScans'));
+% s1.range = [0 1];
+% s1.clip = [0 1];
+s1.colormap = hot(312);
+s1.colormap = s1.colormap(end-255:end,:);
+s1.alpha = 1;
+s1.colormapType = 'setRangeToMax';
+s1.interrogator = 'eventRelatedPlot_so';
+s1.mergeFunction = 'defaultMergeParams';
+
+dp.name = 'dp';
+dp.groupName = params.groupName;
+dp.function = 'eventRelatedGlm_so';
+dp.reconcileFunction = 'defaultReconcileParams';
+dp.data = cell(1,viewGet(view,'nScans'));
+dp.date = dateString;
+dp.params = cell(1,viewGet(view,'nScans'));
+% dp.range = [0 1];
+% dp.clip = [0 1];
+dp.colormap = hot(312);
+dp.colormap = dp.colormap(end-255:end,:);
+dp.alpha = 1;
+dp.colormapType = 'setRangeToMax';
+dp.interrogator = 'eventRelatedPlot_so';
+dp.mergeFunction = 'defaultMergeParams';
+
+s2.name = 's2';
+s2.groupName = params.groupName;
+s2.function = 'eventRelatedGlm_so';
+s2.reconcileFunction = 'defaultReconcileParams';
+s2.data = cell(1,viewGet(view,'nScans'));
+s2.date = dateString;
+s2.params = cell(1,viewGet(view,'nScans'));
+% s2.range = [0 1];
+% s2.clip = [0 1];
+s2.colormap = hot(312);
+s2.colormap = s2.colormap(end-255:end,:);
+s2.alpha = 1;
+s2.colormapType = 'setRangeToMax';
+s2.interrogator = 'eventRelatedPlot_so';
+s2.mergeFunction = 'defaultMergeParams';

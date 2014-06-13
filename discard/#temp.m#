@@ -1,0 +1,49 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+function [y] = calcModel(x,roiTC,DMlong,TR,concatInfo)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% x are the input vals for the function
+% y are the error values
+% lsqnonlin will minimize the sum of squares of these errors by changing
+% values in the input values, until some criteria is reached
+
+hrfParams.rdelay = x(7);
+hrfParams.udelay = x(8);
+hrfParams.rdispersion = 1; % don't try to estimate;
+hrfParams.udispersion = 1; % don't try to estimate;
+hrfParams.tmax = 16;
+
+hrf = spmHRF_so(TR,hrfParams)
+
+betas(1:6,1) = x(1:6);
+
+%convolve DM by HRF one run at a time and stack
+
+% get relevant concatInfo
+runTransition = concatInfo.runTransition;
+hipassfilter = concatInfo.hipassfilter;
+
+scm = [];
+% test how long this takes
+for runnum = 1:size(runTransition,1) 
+  DM = [];
+  % convolve DM with HRF
+  DM = DMlong(runTransition(runnum,1):runTransition(runnum,2),:);
+  m = convn(DM, hrf(:,1));
+  m = m(1:length(DM),:);
+  % remove mean 
+  m = m-repmat(mean(m), size(m,1), 1);
+  % apply the same filter as original data
+  m = real(ifft(fft(m) .* repmat(hipassfilter{runnum}', 1, size(m,2)) ));
+  %stack
+  scm = [scm; m];
+end
+
+
+% calculate model given input betas and this scm from the input hrf vals
+model = scm * betas;
+
+% feed error back to lsqnonlin to minimize
+y = roiTC - model; 
+
+return

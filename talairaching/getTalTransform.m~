@@ -1,0 +1,39 @@
+function talTransform = getTalTransform(points)
+
+% given the points, produce the talairach tranformation matrix
+
+% temporary for debugging:
+% points are columns: AC, PC, PPC, AAC
+% rows are dimensions: sagital, coronal, axial
+AC = [91 140 110]';
+PC = [91 118 110]';
+PPC = [91 45 110]';
+AAC = [91 177 110]';
+LAC = [156 140 110]';
+RAC = [27 140 110]';
+SAC = [91 140 189]';
+IAC = [91 140 80]';
+points = [AC PC PPC AAC LAC RAC SAC IAC]
+points(4,:) = ones(1,size(points,2));
+
+% solve: Tal points = talTransform * original points
+
+% Tal points are given:
+tAC = [0 0 0]';
+tPC = [0 -24 0]';
+tPPC = [0 -102 0]';
+tAAC = [0 68 0]';
+tLAC = [-62 0 0]';
+tRAC = [62 0 0]';
+tSAC = [0 0 72]';
+tIAC = [0 0 -42]';
+talPoints = [tAC tPC tPPC tAAC tLAC tRAC tSAC tIAC]
+talPoints(4, :) = ones(1,size(talPoints,2));
+
+talTransform = talPoints*pinv(points)
+
+function talVal = vol2tal(x,y,z,talTransform)
+
+% given a point and a transform, return the talairach coordinates.
+
+% need to double-check how x, y and z map onto sag, cor and ax
